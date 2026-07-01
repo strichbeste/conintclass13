@@ -13,7 +13,7 @@ services:
         max-file: '3'
 
   migrations:
-    image: ${DOCKER_IMAGE:-strichbeste/conintclass13:latest}
+    build: .
     command: sh -c "npm run migrate"
     depends_on:
       - database
@@ -26,7 +26,7 @@ services:
         max-file: '3'
 
   app-blue:
-    image: ${DOCKER_IMAGE:-strichbeste/conintclass13:latest}
+    build: .
     expose:
       - "5000"
     depends_on:
@@ -42,7 +42,7 @@ services:
         max-file: '3'
 
   app-green:
-    image: ${DOCKER_IMAGE:-strichbeste/conintclass13:latest}
+    build: .
     expose:
       - "5000"
     depends_on:
