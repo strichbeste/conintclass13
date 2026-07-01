@@ -6,12 +6,36 @@ const prisma = new PrismaClient();
 const server = fastify();
 
 const PORT = process.env.PORT || 5000;
-const HOST = process.env.HOST || '127.0.0.1';
+const HOST = process.env.HOST || '0.0.0.0';
 
+// GET /ping - creates a new counter entry and returns total count
 server.get('/ping', async (_, reply) => {
   try {
     await prisma.counter.create({
       data: {},
+    });
+
+    const count = await prisma.counter.count();
+
+    return reply.status(200).send({ count });
+  } catch (error: any) {
+    return reply.status(500).send({ error: error?.message });
+  }
+});
+
+// GET /pong - deletes the latest counter entry and returns remaining count
+server.get('/pong', async (_, reply) => {
+  try {
+    const latest = await prisma.counter.findFirst({
+      orderBy: { id: 'desc' },
+    });
+
+    if (!latest) {
+      return reply.status(404).send({ error: 'No counter entries found' });
+    }
+
+    await prisma.counter.delete({
+      where: { id: latest.id },
     });
 
     const count = await prisma.counter.count();
@@ -31,5 +55,5 @@ server.listen({
     process.exit(1);
   }
 
-  console.log(`Server listening at ${address}`)
+  console.log(`Server listening at ${address}`);
 });
