@@ -38,37 +38,36 @@ jobs:
             ${{ env.DOCKER_IMAGE }}:${{ steps.vars.outputs.short_sha }}
             ${{ env.DOCKER_IMAGE }}:latest
 
-  # ─── DEPLOY TO EC2 (pull new image into inactive slot) ────────────────────
+  # ─── DEPLOY TO EC2 via AWS SSM (no SSH key needed) ──────────────────
   deploy:
     name: Deploy to EC2
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Decode SSH key
-        run: |
-          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" | base64 -d > /tmp/ssh_key
-          chmod 600 /tmp/ssh_key
-
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key_path: /tmp/ssh_key
-          script: |
-            set -e
-            cd ~/conintclass13
-            git pull origin main
-            export DOCKER_IMAGE=${{ env.DOCKER_IMAGE }}:${{ needs.build.outputs.docker_tag }}
-            docker pull $DOCKER_IMAGE
-            CURRENT=$(docker compose ps --services --filter status=running | grep app || echo "")
-            if echo "$CURRENT" | grep -q blue; then
-              docker compose up -d --no-deps --pull always app-green migrations
-              echo 'green' > /tmp/new_slot
-            else
-              docker compose up -d --no-deps --pull always app-blue migrations
-              echo 'blue' > /tmp/new_slot
-            fi
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Deploy via SSM
+        run: |
+          aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "set -e",
+              "cd /home/ubuntu/conintclass13",
+              "git pull origin main",
+              "export DOCKER_IMAGE=${{ env.DOCKER_IMAGE }}:${{ needs.build.outputs.docker_tag }}",
+              "docker pull $DOCKER_IMAGE",
+              "CURRENT=$(docker compose ps --services --filter status=running | grep app || echo \"\")",
+              "if echo \"$CURRENT\" | grep -q blue; then docker compose up -d --no-deps --pull always app-green migrations && echo green > /tmp/new_slot; else docker compose up -d --no-deps --pull always app-blue migrations && echo blue > /tmp/new_slot; fi"
+            ]' \
+            --comment "Deploy ${{ needs.build.outputs.docker_tag }}" \
+            --output text
 
   # ─── PERFORMANCE TEST WITH k6 ─────────────────────────────────────────────
   performance_test:
@@ -92,26 +91,29 @@ jobs:
     needs: performance_test
     if: success()
     steps:
-      - name: Decode SSH key
-        run: |
-          echo "${{ secrets.EC2_SSH_PRIVATE_KEY }}" | base64 -d > /tmp/ssh_key
-          chmod 600 /tmp/ssh_key
-
-      - name: Switch nginx traffic
-        uses: appleboy/ssh-action@v1.0.3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          host: ${{ secrets.EC2_HOST }}
-          username: ubuntu
-          key_path: /tmp/ssh_key
-          script: |
-            set -e
-            cd ~/conintclass13
-            NEW_SLOT=$(cat /tmp/new_slot)
-            echo "Switching traffic to: $NEW_SLOT"
-            cp nginx/${NEW_SLOT}.conf nginx/active.conf
-            docker compose up -d --no-deps nginx
-            docker compose exec nginx nginx -s reload
-            echo "Traffic switched to $NEW_SLOT ✅"
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: us-east-1
+
+      - name: Switch nginx traffic via SSM
+        run: |
+          aws ssm send-command \
+            --instance-ids "${{ secrets.EC2_INSTANCE_ID }}" \
+            --document-name "AWS-RunShellScript" \
+            --parameters 'commands=[
+              "set -e",
+              "cd /home/ubuntu/conintclass13",
+              "NEW_SLOT=$(cat /tmp/new_slot)",
+              "cp nginx/${NEW_SLOT}.conf nginx/active.conf",
+              "docker compose up -d --no-deps nginx",
+              "docker compose exec nginx nginx -s reload",
+              "echo Traffic switched to $NEW_SLOT"
+            ]' \
+            --output text
 
   # ─── NOTIFY ON FAILURE ────────────────────────────────────────────────────
   notify_failure:
@@ -127,4 +129,3 @@ jobs:
           echo "Author: ${{ github.actor }}"
           echo "Branch: ${{ github.ref_name }}"
           echo "Run URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "Performance test may have failed - traffic NOT switched. Current version remains active."
